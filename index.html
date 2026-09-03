@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="build-version" content="2026-09-03-01">
+<title>Area Measure — CSR Sustain</title>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --ink:#0F1620;          /* rail */
+    --ink-2:#18232F;        /* raised surfaces */
+    --line:#2A3947;
+    --line-soft:#1F2C38;
+    --text:#E8EDF1;
+    --text-dim:#8FA3B4;
+    --hivis:#FFC426;        /* setting-out yellow — the one accent */
+    --draw:#2F9BEA;         /* measured shapes */
+    --warn:#FF8A5B;
+    --rail:360px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    font-family:Barlow,system-ui,-apple-system,sans-serif;
+    background:var(--ink);color:var(--text);
+    font-variant-numeric:tabular-nums;
+    -webkit-text-size-adjust:100%;
+    overflow:hidden;
+  }
+  #shell{display:flex;height:100%}
+  #map{flex:1;background:#0B1118;outline:none}
+
+  /* ---------------------------------------------------------------- rail */
+  #rail{
+    width:var(--rail);flex:0 0 var(--rail);
+    background:var(--ink);border-left:1px solid var(--line);
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  .rail-head{padding:18px 20px 14px;border-bottom:1px solid var(--line-soft)}
+  .rail-head h1{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
+  .rail-head p{margin:3px 0 0;font-size:13px;color:var(--text-dim);line-height:1.4}
+  .rail-body{flex:1;overflow-y:auto;overscroll-behavior:contain}
+  section{padding:16px 20px;border-bottom:1px solid var(--line-soft)}
+  h2{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--text-dim)}
+
+  /* the live readout — the hero */
+  .readout{padding:20px;background:var(--ink-2);border-bottom:1px solid var(--line-soft)}
+  .figure{display:flex;align-items:baseline;gap:8px}
+  .figure b{font-size:42px;font-weight:600;line-height:.95;letter-spacing:-.025em}
+  .figure span{font-size:15px;color:var(--text-dim)}
+  .figure.lead b{color:var(--hivis)}
+  .sub{display:flex;gap:22px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+  .sub div{min-width:0}
+  .sub b{display:block;font-size:19px;font-weight:600;line-height:1.15}
+  .sub small{font-size:12px;color:var(--text-dim)}
+  .empty{font-size:14px;color:var(--text-dim);line-height:1.5}
+
+  /* controls */
+  label.fld{display:block;font-size:13px;color:var(--text-dim);margin-bottom:5px}
+  input,select,button{font-family:inherit;font-size:14px}
+  input[type=text],input[type=number],select{
+    width:100%;padding:9px 11px;background:var(--ink-2);color:var(--text);
+    border:1px solid var(--line);border-radius:5px;font-variant-numeric:tabular-nums;
+  }
+  input:focus,select:focus,button:focus-visible{outline:2px solid var(--hivis);outline-offset:1px}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1}
+  button{
+    padding:9px 13px;background:var(--ink-2);color:var(--text);
+    border:1px solid var(--line);border-radius:5px;cursor:pointer;
+  }
+  button:hover{border-color:var(--text-dim)}
+  button.primary{background:var(--hivis);color:#1A1200;border-color:var(--hivis);font-weight:600}
+  button.primary:hover{background:#FFD156}
+  .hint{font-size:12px;color:var(--text-dim);margin:8px 0 0;line-height:1.45}
+  #qres{margin-top:8px;display:flex;flex-direction:column;gap:1px}
+  #qres:empty{display:none}
+  button.res{
+    text-align:left;padding:8px 10px;font-size:12.5px;line-height:1.35;
+    background:var(--ink-2);border:1px solid var(--line);border-radius:4px;color:var(--text);
+  }
+  button.res:hover{border-color:var(--hivis)}
+  .alt{margin-top:5px;font-size:13px;color:var(--text-dim)}
+  .alt:empty{display:none}
+
+  /* shape list */
+  .shape{
+    display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;align-items:center;
+    padding:11px 0;border-bottom:1px solid var(--line-soft);
+  }
+  .shape:last-child{border-bottom:0}
+  .swatch{width:9px;height:34px;border-radius:2px;background:var(--draw)}
+  .shape.off .swatch{background:var(--line)}
+  .shape.off .nm,.shape.off .mt{opacity:.4}
+  .nm{font-size:14px;font-weight:500}
+  .mt{font-size:12px;color:var(--text-dim)}
+  .shape .acts{display:flex;gap:5px;align-items:center}
+  .shape input[type=number]{width:56px;padding:5px 7px;font-size:13px}
+  .shape .acts{flex-wrap:wrap;justify-content:flex-end;max-width:210px}
+  .icon{padding:5px 8px;line-height:1;font-size:13px}
+  .warnbox{
+    margin:10px 0 0;padding:10px 12px;background:rgba(255,138,91,.1);
+    border-left:2px solid var(--warn);border-radius:0 4px 4px 0;
+    font-size:12.5px;line-height:1.45;color:#FFCDB8;
+  }
+
+  /* map furniture */
+  .leaflet-container{background:#0B1118}
+  .leaflet-control-attribution{
+    background:rgba(15,22,32,.86)!important;color:var(--text-dim)!important;
+    font-size:10.5px!important;backdrop-filter:blur(4px);
+  }
+  .leaflet-control-attribution a{color:var(--text-dim)!important}
+  .basemap-pick{
+    position:absolute;top:12px;left:12px;z-index:600;display:flex;
+    background:rgba(15,22,32,.9);border:1px solid var(--line);border-radius:6px;
+    overflow:hidden;backdrop-filter:blur(6px);
+  }
+  .basemap-pick button{border:0;border-radius:0;background:transparent;font-size:13px;padding:8px 13px}
+  @media (max-width:820px){ .basemap-pick button{padding:8px 10px;font-size:12.5px} }
+  .basemap-pick button[aria-pressed=true]{background:var(--hivis);color:#1A1200;font-weight:600}
+  .basemap-pick button + button{border-left:1px solid var(--line)}
+  .basemap-pick button:disabled{opacity:.35;cursor:default}
+  .basemap-pick button:disabled[aria-pressed=true]{background:transparent;color:var(--text);font-weight:400}
+  .scalebar{
+    position:absolute;bottom:12px;left:12px;z-index:600;
+    background:rgba(15,22,32,.9);border:1px solid var(--line);border-radius:5px;
+    padding:6px 10px;font-size:12px;color:var(--text-dim);backdrop-filter:blur(6px);
+  }
+  .leaflet-draw-toolbar a{
+    background-color:#F2F4F5!important;border-color:#B7C2CB!important;
+  }
+  .leaflet-draw-actions a{background-color:var(--ink-2)!important;color:var(--text)!important}
+
+  /* the draw controls — labelled, not icons */
+  .tools{
+    position:absolute;top:12px;right:12px;z-index:600;display:flex;flex-direction:column;
+    gap:8px;align-items:flex-end;
+  }
+  .tools button{
+    background:rgba(15,22,32,.92);border:1px solid var(--line);color:var(--text);
+    padding:10px 14px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;
+    backdrop-filter:blur(6px);box-shadow:0 1px 6px rgba(0,0,0,.35);white-space:nowrap;
+  }
+  .tools button.go{background:var(--hivis);color:#1A1200;border-color:var(--hivis);font-weight:600}
+  .tools button.go:hover{background:#FFD156}
+  .tools button:hover{border-color:var(--text-dim)}
+  .drawing-note{
+    position:absolute;left:50%;transform:translateX(-50%);top:12px;z-index:610;
+    background:var(--hivis);color:#1A1200;padding:9px 16px;border-radius:20px;
+    font-size:13.5px;font-weight:600;box-shadow:0 2px 10px rgba(0,0,0,.4);
+  }
+
+  /* mobile: rail becomes a sheet */
+  @media (max-width:820px){
+    #shell{flex-direction:column}
+    #map{height:52vh;flex:none}
+    #rail{width:100%;flex:1;border-left:0;border-top:1px solid var(--line)}
+    .figure b{font-size:34px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div id="shell">
+  <div style="position:relative;flex:1;display:flex">
+    <div id="map" tabindex="0" aria-label="Aerial map. Use the draw tool to trace a building outline."></div>
+    <div class="basemap-pick" role="group" aria-label="Base map">
+      <button id="bm-sat" aria-pressed="true">Aerial</button>
+      <button id="bm-map" aria-pressed="false" title="OpenStreetMap: excellent building coverage in the UK, patchy elsewhere">OSM</button>
+      <button id="bm-esri" aria-pressed="false" title="Esri street map: commercially sourced, often better coverage outside the UK">Esri</button>
+      <button id="bm-lbl" aria-pressed="true" title="Show place names and roads over the imagery">Names</button>
+    </div>
+    <div class="tools">
+      <button id="t-poly" class="go">Trace outline</button>
+      <button id="t-rect">Draw a rectangle</button>
+      <button id="t-edit">Adjust corners</button>
+    </div>
+    <div class="drawing-note" id="drawnote" hidden></div>
+    <div class="scalebar" id="zoomnote">Zoom in to trace accurately</div>
+  </div>
+
+  <aside id="rail">
+    <div class="rail-head">
+      <h1>Area Measure</h1>
+      <p>Trace a building outline to measure its floor area. Nothing is sent anywhere.</p>
+    </div>
+
+    <div class="readout" id="readout">
+      <p class="empty" id="empty">
+        Find the building, then press Trace outline on the map and click round its edge.
+        Click the first corner again to close the shape.
+      </p>
+      <div id="figures" hidden>
+        <div class="figure lead">
+          <b id="v-gia">0</b><span>m² internal floor area</span>
+        </div>
+        <div class="alt" id="v-alt"></div>
+        <div class="sub">
+          <div><b id="v-foot">0</b><small>m² footprint</small></div>
+          <div><b id="v-gea">0</b><small>m² gross external</small></div>
+          <div><b id="v-perim">0</b><small>m perimeter</small></div>
+        </div>
+      </div>
+      <div id="warnings"></div>
+    </div>
+
+    <div class="rail-body">
+      <section>
+        <h2>Find the building</h2>
+        <div class="row">
+          <input type="text" id="q" placeholder="Postcode, address, or 53.5933, -2.2967"
+                 autocomplete="off" enterkeyhint="search" style="flex:2.4">
+          <button id="go">Find</button>
+        </div>
+        <p class="hint" id="qhint">A postcode, address or place name. You can also paste coordinates as latitude, longitude.</p>
+        <div id="qres"></div>
+      </section>
+
+      <section>
+        <h2>Outlines</h2>
+        <div id="shapes"><p class="empty">No outlines yet. Press Trace outline on the map.</p></div>
+      </section>
+
+      <section>
+        <h2>Adjustments</h2>
+        <label class="fld" for="walls">Wall construction</label>
+        <select id="walls">
+          <option value="0">No deduction, external area or land parcel</option>
+          <optgroup label="United Kingdom construction">
+            <option value="0.34">Solid masonry, pre-1919</option>
+            <option value="0.30" selected>Cavity masonry, 1920–1975</option>
+            <option value="0.33">Cavity masonry, post-1975</option>
+            <option value="0.40">Cavity masonry, post-2002</option>
+            <option value="0.20">Steel frame with cladding</option>
+            <option value="0.15">Curtain wall or glazed</option>
+            <option value="0.12">Profiled sheet, industrial</option>
+          </optgroup>
+          <optgroup label="Set by thickness">
+            <option value="0.15">Thin, framed or glazed, 0.15 m</option>
+            <option value="0.20">0.20 m</option>
+            <option value="0.25">0.25 m</option>
+            <option value="0.30">0.30 m</option>
+            <option value="0.35">0.35 m</option>
+            <option value="0.45">Thick masonry, 0.45 m</option>
+          </optgroup>
+        </select>
+        <div class="row" style="margin-top:10px">
+          <div>
+            <label class="fld" for="thick">Thickness, m</label>
+            <input type="number" id="thick" value="0.30" min="0" max="1.5" step="0.01">
+          </div>
+          <div>
+            <label class="fld" for="deduct">Deduct, m²</label>
+            <input type="number" id="deduct" value="0" min="0" step="1">
+          </div>
+        </div>
+        <p class="hint">Use the deduction for plant rooms, undercrofts or atrium voids that are inside the outline but are not useful floor area. For a land parcel, choose no deduction and leave storeys at 1.</p>
+      </section>
+
+      <section>
+        <h2>Record</h2>
+        <label class="fld" for="ref">Property reference</label>
+        <input type="text" id="ref" placeholder="Site name, UPRN or job number">
+        <label class="fld" for="surveyor" style="margin-top:10px">Measured by</label>
+        <input type="text" id="surveyor" placeholder="Your name">
+        <div class="row" style="margin-top:12px">
+          <button id="csv">Download CSV</button>
+          <button id="json" class="primary">Save record</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="load">Open a saved record</button>
+          <button id="clear" class="icon" title="Remove all outlines" style="flex:0 0 auto">Clear</button>
+        </div>
+        <input type="file" id="file" accept=".json" hidden>
+        <p class="hint" id="savenote">Your work is kept in this browser as you go.</p>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+<script>
+(function(){
+"use strict";
+
+/* ------------------------------------------------------------------ state */
+var shapes = [];          // {id, layer, storeys, on, label}
+var nextId = 1;
+var STORE = "csr-area-measure-v1";
+
+/* ------------------------------------------------------------------- map */
+var sat = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  { maxZoom: 21, maxNativeZoom: 19,
+    attribution: "Imagery &copy; Esri, Maxar, Earthstar Geographics" });
+
+/* maxNativeZoom stops the layer requesting tiles that do not exist and
+   stretches the deepest real ones instead, so the zoom ceiling no longer
+   drops when the base map is swapped. */
+var street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  { maxZoom: 21, maxNativeZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors" });
+
+/* OpenStreetMap building coverage is near-complete in the UK but thin outside
+   it, so a commercially sourced street map is offered alongside it. */
+var streetEsri = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+  { maxZoom: 21, maxNativeZoom: 19,
+    attribution: "&copy; Esri and its data suppliers" });
+
+var map = L.map("map", { center: [53.5933, -2.2967], zoom: 16, layers: [sat],
+                         maxZoom: 21,
+                         zoomControl: true, attributionControl: true });
+
+/* Aerial imagery carries no place names, so a transparent reference layer
+   sits above it in its own pane, below the drawn outlines. */
+map.createPane("labels");
+map.getPane("labels").style.zIndex = 350;
+map.getPane("labels").style.pointerEvents = "none";
+
+var labels = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+  { pane: "labels", maxZoom: 21, maxNativeZoom: 16, opacity: 0.95,
+    attribution: "Place names &copy; Esri" });
+
+/* Traced outlines get their own pane above every base map and overlay, so
+   nothing a base map does can change what is drawn on top of what. */
+map.createPane("shapes");
+map.getPane("shapes").style.zIndex = 450;
+var shapeRenderer = L.svg({ pane: "shapes" });
+
+var drawn = new L.FeatureGroup().addTo(map);
+
+var polyOpts = { showArea: false, allowIntersection: false, metric: true,
+                 guidelineDistance: 8, shapeOptions: shapeStyle(true) };
+var rectOpts = { shapeOptions: shapeStyle(true) };
+
+/* Leaflet.draw's own toolbar is icon-only and easy to miss, so the handlers
+   are driven from labelled buttons instead. The edit toolbar is kept for
+   dragging corners, which has no simple equivalent. */
+var editControl = new L.Control.Draw({
+  position: "bottomright",
+  edit: { featureGroup: drawn, remove: true },
+  draw: false
+});
+
+var polyHandler = new L.Draw.Polygon(map, polyOpts);
+var rectHandler = new L.Draw.Rectangle(map, rectOpts);
+var editOn = false;
+
+function note(text){
+  var el = document.getElementById("drawnote");
+  if (!text){ el.hidden = true; return; }
+  el.textContent = text;
+  el.hidden = false;
+}
+
+document.getElementById("t-poly").onclick = function(){
+  rectHandler.disable();
+  polyHandler.enable();
+  note("Click each corner. Click the first corner again to finish. Esc cancels.");
+};
+
+document.getElementById("t-rect").onclick = function(){
+  polyHandler.disable();
+  rectHandler.enable();
+  note("Press and drag across the building. Esc cancels.");
+};
+
+document.getElementById("t-edit").onclick = function(){
+  if (!shapes.length){ note("Trace an outline first."); setTimeout(note, 2200); return; }
+  editOn = !editOn;
+  this.classList.toggle("go", editOn);
+  this.textContent = editOn ? "Done adjusting" : "Adjust corners";
+  if (editOn){
+    map.addControl(editControl);
+    note("Drag the white handles to move corners, then press Done.");
+  } else {
+    map.removeControl(editControl);
+    note();
+    render();
+  }
+};
+
+map.on(L.Draw.Event.DRAWSTOP, function(){ note(); });
+
+document.addEventListener("keydown", function(e){
+  if (e.key === "Escape"){ polyHandler.disable(); rectHandler.disable(); note(); }
+});
+
+function shapeStyle(on){
+  /* Blue reads well on dark imagery but sits close to OpenStreetMap's own
+     water and road colours, so the outline switches to magenta on Street. */
+  var live = map.hasLayer(sat) ? "#2F9BEA" : "#E5006E";
+  return { color: on ? live : "#4A5A69", weight: on ? 3 : 2, opacity: 1,
+           renderer: shapeRenderer,
+           fillColor: on ? live : "#4A5A69", fillOpacity: on ? 0.22 : 0.08 };
+}
+
+var namesOn = true;
+var bases = [sat, street, streetEsri];
+
+/* The reference layer is raster and publishes tiles to zoom 16, so past that
+   Leaflet stretches them and the text balloons. Rather than show enlarged,
+   blurred names over the roof you are trying to trace, they fade out and stop.
+   If you switch to a labels source that publishes deeper, raise both numbers
+   together — maxNativeZoom on the layer above, and NAMES_MAX here. */
+var NAMES_MAX = 18;
+
+function nameOpacity(z){
+  if (z <= 16) return 0.95;   // native resolution, crisp
+  if (z === 17) return 0.65;
+  return 0.35;                // zoom 18, last step before they are dropped
+}
+
+document.getElementById("bm-sat").onclick = function(){ swapBase(sat, this); };
+document.getElementById("bm-map").onclick = function(){ swapBase(street, this); };
+document.getElementById("bm-esri").onclick = function(){ swapBase(streetEsri, this); };
+document.getElementById("bm-lbl").onclick = function(){ namesOn = !namesOn; syncNames(); };
+
+function swapBase(layer, btn){
+  bases.forEach(function(l){ if (map.hasLayer(l)) map.removeLayer(l); });
+  layer.addTo(map).bringToBack();
+  ["bm-sat", "bm-map", "bm-esri"].forEach(function(id){
+    var b = document.getElementById(id);
+    b.setAttribute("aria-pressed", String(b === btn));
+  });
+  syncNames();
+  render();
+}
+
+/* Both street maps carry their own names, so the overlay is only offered on
+   the aerial view, and only while it is still legible. */
+function syncNames(){
+  var onAerial = map.hasLayer(sat);
+  var z = map.getZoom();
+  var tooClose = z > NAMES_MAX;
+  var show = namesOn && onAerial && !tooClose;
+
+  if (show){
+    labels.setOpacity(nameOpacity(z));
+    if (!map.hasLayer(labels)) labels.addTo(map);
+  } else if (map.hasLayer(labels)){
+    map.removeLayer(labels);
+  }
+
+  var btn = document.getElementById("bm-lbl");
+  btn.setAttribute("aria-pressed", String(namesOn && !tooClose));
+  btn.disabled = !onAerial || tooClose;
+  btn.title = !onAerial ? "Street mapping already shows names"
+            : tooClose  ? "Place names stop at zoom " + NAMES_MAX + ", beyond which they would be enlarged and blurred"
+            : namesOn   ? "Hide place names while you trace"
+                        : "Show place names and roads over the imagery";
+}
+
+map.on("zoomend", syncNames);
+syncNames();
+
+map.on("zoomend", function(){
+  var z = map.getZoom();
+  document.getElementById("zoomnote").textContent =
+    z >= 19 ? "Good zoom for tracing" :
+    z >= 17 ? "Zoom in further for accuracy" : "Zoom in to trace accurately";
+});
+
+/* --------------------------------------------------------------- geometry */
+function toGeoJSON(layer){ return layer.toGeoJSON(); }
+
+/* turf.area uses a sphere of a single radius, which biases results by a
+   latitude-dependent amount: about -0.20% in the UK but +0.22% at Tehran and
+   +0.39% at Bandar Abbas, or roughly 39 m2 in every hectare. These functions
+   work on a local tangent plane using the WGS84 radii of curvature instead,
+   which holds to better than 0.001% of a true geodesic area anywhere in the
+   world, for parcels up to several kilometres across. */
+function mPerDegree(lat){
+  var p = lat * Math.PI / 180;
+  return {
+    lat: 111132.92 - 559.82*Math.cos(2*p) + 1.175*Math.cos(4*p) - 0.0023*Math.cos(6*p),
+    lng: 111412.84*Math.cos(p) - 93.5*Math.cos(3*p) + 0.118*Math.cos(5*p)
+  };
+}
+/* GeoJSON rings repeat the first point at the end; drop it and project. */
+function project(ring){
+  var r = ring.slice();
+  if (r.length > 1){
+    var a = r[0], b = r[r.length - 1];
+    if (a[0] === b[0] && a[1] === b[1]) r.pop();
+  }
+  var la = 0, lo = 0, i;
+  for (i = 0; i < r.length; i++){ lo += r[i][0]; la += r[i][1]; }
+  la /= r.length; lo /= r.length;
+  var s = mPerDegree(la);
+  return r.map(function(p){ return [(p[0] - lo) * s.lng, (p[1] - la) * s.lat]; });
+}
+function ringArea(ring){
+  var p = project(ring), a = 0, n = p.length, i, j;
+  for (i = 0; i < n; i++){ j = (i + 1) % n; a += p[i][0]*p[j][1] - p[j][0]*p[i][1]; }
+  return Math.abs(a / 2);
+}
+function ringLength(ring){
+  var p = project(ring), d = 0, n = p.length, i, j;
+  for (i = 0; i < n; i++){ j = (i + 1) % n; d += Math.hypot(p[j][0]-p[i][0], p[j][1]-p[i][1]); }
+  return d;
+}
+/* Rings after the first are holes, and turf.buffer can return a MultiPolygon
+   when an outline pinches apart, so both cases are handled. */
+function areaOf(gj){
+  var g = gj && (gj.geometry || gj);
+  if (!g) return 0;
+  function poly(rings){
+    return rings.reduce(function(t, r, i){ return t + (i === 0 ? ringArea(r) : -ringArea(r)); }, 0);
+  }
+  if (g.type === "Polygon") return poly(g.coordinates);
+  if (g.type === "MultiPolygon") return g.coordinates.reduce(function(t, c){ return t + poly(c); }, 0);
+  return 0;
+}
+
+function footprint(layer){
+  try { return areaOf(toGeoJSON(layer)); } catch(e){ return 0; }
+}
+
+function perimeter(layer){
+  try {
+    var g = toGeoJSON(layer).geometry;
+    if (g.type === "Polygon") return ringLength(g.coordinates[0]);
+    if (g.type === "MultiPolygon")
+      return g.coordinates.reduce(function(t, c){ return t + ringLength(c[0]); }, 0);
+    return 0;
+  } catch(e){ return 0; }
+}
+
+/* Internal area: shrink the outline inwards by the wall thickness.
+   A negative buffer is used rather than area - perimeter x thickness, because
+   the subtraction omits the corner term and misbehaves on concave outlines
+   and courtyards. Returns null when the outline is too narrow to shrink. */
+function internal(layer, t){
+  var f = footprint(layer);
+  if (t <= 0) return f;
+  try {
+    var inner = turf.buffer(toGeoJSON(layer), -t, { units: "meters" });
+    if (!inner) return null;
+    var a = areaOf(inner);
+    return a > 0 ? a : null;
+  } catch(e){ return null; }
+}
+
+/* -------------------------------------------------------------- draw hooks */
+map.on(L.Draw.Event.CREATED, function(e){
+  drawn.addLayer(e.layer);
+  shapes.push({ id: nextId, layer: e.layer, storeys: 1, on: true, label: "Outline " + nextId });
+  nextId++;
+  bindLayer(shapes[shapes.length - 1]);
+  render();
+});
+
+map.on(L.Draw.Event.EDITED, render);
+
+map.on(L.Draw.Event.DELETED, function(e){
+  e.layers.eachLayer(function(l){
+    shapes = shapes.filter(function(s){ return s.layer !== l; });
+  });
+  render();
+});
+
+function bindLayer(s){
+  s.layer.on("click", function(){
+    document.getElementById("shape-" + s.id).scrollIntoView({ block: "nearest" });
+  });
+}
+
+/* ----------------------------------------------------------------- render */
+function fmt(n, dp){
+  if (!isFinite(n)) return "—";
+  return n.toLocaleString("en-GB", { minimumFractionDigits: dp || 0,
+                                     maximumFractionDigits: dp || 0 });
+}
+
+function render(){
+  var t = parseFloat(document.getElementById("thick").value) || 0;
+  var deduct = parseFloat(document.getElementById("deduct").value) || 0;
+  var list = document.getElementById("shapes");
+  var warn = [];
+  var foot = 0, gea = 0, gia = 0, perim = 0;
+
+  list.innerHTML = "";
+  if (!shapes.length) list.innerHTML = '<p class="empty">No outlines yet. Press Trace outline on the map.</p>';
+
+  shapes.forEach(function(s){
+    s.layer.setStyle(shapeStyle(s.on));
+
+    var f = footprint(s.layer);
+    var p = perimeter(s.layer);
+    var inn = internal(s.layer, t);
+
+    if (inn === null){
+      warn.push(s.label + " is too narrow for a " + t.toFixed(2) +
+                " m wall deduction, so its external area has been used. Measure this one on site.");
+      inn = f;
+    } else if (t > 0 && inn < f * 0.5){
+      warn.push(s.label + ": the wall deduction removes more than half the outline. Check the thickness and the trace.");
+    }
+
+    if (s.on){
+      foot += f; perim += p;
+      gea += f * s.storeys;
+      gia += inn * s.storeys;
+    }
+
+    var row = document.createElement("div");
+    row.className = "shape" + (s.on ? "" : " off");
+    row.id = "shape-" + s.id;
+    row.innerHTML =
+      '<div class="swatch"></div>' +
+      '<div><div class="nm">' + s.label + '</div>' +
+      '<div class="mt">' + fmt(f) + " m² · " + fmt(p) + ' m round</div></div>' +
+      '<div class="acts">' +
+        '<input type="number" min="0.5" max="60" step="0.5" value="' + s.storeys +
+          '" aria-label="Storeys for ' + s.label + '" title="Storeys">' +
+        '<button class="icon" title="Zoom to this outline">Show</button>' +
+        '<button class="icon" title="' + (s.on ? "Leave out of the total" : "Put back in the total") + '">' +
+          (s.on ? "Exclude" : "Include") + '</button>' +
+        '<button class="icon" title="Delete this outline">Remove</button>' +
+      "</div>";
+
+    var inputs = row.querySelectorAll("input,button");
+    inputs[0].onchange = function(){
+      s.storeys = Math.max(0.5, parseFloat(this.value) || 1);
+      render(); save();
+    };
+    inputs[1].onclick = function(){ map.fitBounds(s.layer.getBounds(), { padding: [40, 40] }); };
+    inputs[2].onclick = function(){ s.on = !s.on; render(); save(); };
+    inputs[3].onclick = function(){
+      drawn.removeLayer(s.layer);
+      shapes = shapes.filter(function(x){ return x !== s; });
+      render(); save();
+    };
+    list.appendChild(row);
+  });
+
+  var giaNet = Math.max(0, gia - deduct);
+  if (deduct > 0 && deduct >= gia && gia > 0)
+    warn.push("The deduction is larger than the measured floor area.");
+
+  var any = shapes.some(function(s){ return s.on; });
+  document.getElementById("empty").hidden = any;
+  document.getElementById("figures").hidden = !any;
+
+  document.getElementById("v-gia").textContent = fmt(giaNet);
+  document.getElementById("v-foot").textContent = fmt(foot);
+  document.getElementById("v-gea").textContent = fmt(gea);
+  document.getElementById("v-perim").textContent =
+    perim >= 2000 ? fmt(perim / 1000, 2) : fmt(perim);
+  document.getElementById("v-perim").nextElementSibling.textContent =
+    perim >= 2000 ? "km perimeter" : "m perimeter";
+
+  /* Land parcels are quoted in hectares far more often than square metres,
+     so both are shown once the area is large enough for it to matter. */
+  document.getElementById("v-alt").textContent = giaNet >= 1000
+    ? fmt(giaNet / 10000, 3) + " ha  ·  " + fmt(giaNet / 4046.8564224, 3) + " acres"
+    : "";
+
+  document.getElementById("warnings").innerHTML = warn.map(function(w){
+    return '<div class="warnbox">' + w + "</div>";
+  }).join("");
+}
+
+document.getElementById("walls").onchange = function(){
+  document.getElementById("thick").value = parseFloat(this.value).toFixed(2);
+  render(); save();
+};
+["thick", "deduct"].forEach(function(id){
+  document.getElementById(id).oninput = function(){ render(); save(); };
+});
+["ref", "surveyor"].forEach(function(id){
+  document.getElementById(id).oninput = save;
+});
+
+/* ----------------------------------------------------------------- search */
+var lastSearch = 0;
+
+document.getElementById("go").onclick = doSearch;
+document.getElementById("q").addEventListener("keydown", function(e){
+  if (e.key === "Enter") doSearch();
+});
+
+function doSearch(){
+  var q = document.getElementById("q").value.trim();
+  var hint = document.getElementById("qhint");
+  if (!q) return;
+
+  // Coordinates pasted directly — no lookup needed at all.
+  var m = q.match(/^\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*$/);
+  if (m){
+    map.setView([parseFloat(m[1]), parseFloat(m[2])], 19);
+    document.getElementById("qres").innerHTML = "";
+    hint.textContent = "Moved to those coordinates.";
+    return;
+  }
+
+  // Nominatim asks for no more than one request a second and no
+  // search-as-you-type, so this only fires on an explicit Find.
+  var wait = 1100 - (Date.now() - lastSearch);
+  if (wait > 0){ hint.textContent = "One moment, searching too quickly."; setTimeout(doSearch, wait); return; }
+  lastSearch = Date.now();
+
+  hint.textContent = "Searching…";
+  var url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=" +
+            encodeURIComponent(q);
+
+  fetch(url, { headers: { "Accept": "application/json" } })
+    .then(function(r){ if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(d){
+      var box = document.getElementById("qres");
+      box.innerHTML = "";
+      if (!d.length){ hint.textContent = "Nothing found. Try a different spelling, or paste coordinates."; return; }
+      hint.textContent = d.length === 1 ? "One match." : d.length + " matches. Pick one.";
+      d.forEach(function(r){
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "res";
+        b.textContent = r.display_name;
+        b.onclick = function(){
+          map.setView([parseFloat(r.lat), parseFloat(r.lon)], 19);
+          hint.textContent = r.display_name;
+          box.innerHTML = "";
+        };
+        box.appendChild(b);
+      });
+      if (d.length === 1) box.firstChild.click();
+    })
+    .catch(function(){
+      document.getElementById("qres").innerHTML = "";
+      hint.textContent = "Search is unavailable. Paste coordinates instead, or pan the map by hand.";
+    });
+}
+
+/* ------------------------------------------------------------------ export */
+function record(){
+  var t = parseFloat(document.getElementById("thick").value) || 0;
+  var deduct = parseFloat(document.getElementById("deduct").value) || 0;
+  var gia = 0, gea = 0, foot = 0;
+  var rows = shapes.map(function(s){
+    var f = footprint(s.layer), inn = internal(s.layer, t);
+    var collapsed = inn === null;
+    if (collapsed) inn = f;
+    if (s.on){ foot += f; gea += f * s.storeys; gia += inn * s.storeys; }
+    return {
+      label: s.label, included: s.on, storeys: s.storeys,
+      footprint_m2: +f.toFixed(2),
+      internal_footprint_m2: +inn.toFixed(2),
+      perimeter_m: +perimeter(s.layer).toFixed(2),
+      gia_m2: +(inn * s.storeys).toFixed(2),
+      wall_deduction_skipped: collapsed,
+      geometry: toGeoJSON(s.layer).geometry
+    };
+  });
+  return {
+    tool: "CSR Sustain Area Measure",
+    build: document.querySelector('meta[name=build-version]').content,
+    property_reference: document.getElementById("ref").value,
+    measured_by: document.getElementById("surveyor").value,
+    measured_at: new Date().toISOString(),
+    basemap: (map.hasLayer(sat) ? "Esri World Imagery"
+              : map.hasLayer(streetEsri) ? "Esri World Street Map" : "OpenStreetMap") +
+             (map.hasLayer(labels) ? " with Esri place names" : "") +
+             " at zoom " + map.getZoom(),
+    method: "Outline traced on aerial imagery. Areas computed on a local tangent " +
+            "plane using WGS84 radii of curvature. Internal area derived by shrinking " +
+            "the outline inwards by the stated wall thickness.",
+    wall_thickness_m: t,
+    wall_construction: document.getElementById("walls").selectedOptions[0].text,
+    deduction_m2: deduct,
+    totals: {
+      footprint_m2: +foot.toFixed(2),
+      gross_external_m2: +gea.toFixed(2),
+      gross_internal_m2: +Math.max(0, gia - deduct).toFixed(2)
+    },
+    outlines: rows
+  };
+}
+
+function download(name, text, mime){
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+  a.download = name;
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+}
+
+function stem(){
+  var r = (document.getElementById("ref").value || "area").replace(/[^\w\-]+/g, "_");
+  return r + "_" + new Date().toISOString().slice(0, 10);
+}
+
+document.getElementById("json").onclick = function(){
+  if (!shapes.length){ alert("Trace at least one outline first."); return; }
+  download(stem() + ".json", JSON.stringify(record(), null, 2), "application/json");
+};
+
+document.getElementById("csv").onclick = function(){
+  if (!shapes.length){ alert("Trace at least one outline first."); return; }
+  var r = record();
+  var head = ["label","included","storeys","footprint_m2","internal_footprint_m2","perimeter_m","gia_m2"];
+  var lines = [
+    ["Property reference", r.property_reference].join(","),
+    ["Measured by", r.measured_by].join(","),
+    ["Measured at", r.measured_at].join(","),
+    ["Wall construction", '"' + r.wall_construction + '"'].join(","),
+    ["Wall thickness m", r.wall_thickness_m].join(","),
+    ["Deduction m2", r.deduction_m2].join(","),
+    "",
+    head.join(",")
+  ];
+  r.outlines.forEach(function(o){
+    lines.push(head.map(function(k){ return o[k]; }).join(","));
+  });
+  lines.push("", ["Footprint m2", r.totals.footprint_m2].join(","),
+                 ["Gross external m2", r.totals.gross_external_m2].join(","),
+                 ["Gross internal m2", r.totals.gross_internal_m2].join(","));
+  download(stem() + ".csv", lines.join("\n"), "text/csv");
+};
+
+document.getElementById("load").onclick = function(){ document.getElementById("file").click(); };
+document.getElementById("file").onchange = function(e){
+  var f = e.target.files[0];
+  if (!f) return;
+  var fr = new FileReader();
+  fr.onload = function(){
+    try { restore(JSON.parse(fr.result), true); }
+    catch(err){ alert("That file could not be read as a saved record."); }
+  };
+  fr.readAsText(f);
+  e.target.value = "";
+};
+
+document.getElementById("clear").onclick = function(){
+  if (shapes.length && !confirm("Remove all outlines?")) return;
+  drawn.clearLayers(); shapes = []; nextId = 1;
+  render(); save();
+};
+
+/* ------------------------------------------------------ restore and autosave */
+function restore(r, fit){
+  drawn.clearLayers(); shapes = []; nextId = 1;
+  document.getElementById("ref").value = r.property_reference || "";
+  document.getElementById("surveyor").value = r.measured_by || "";
+  if (r.wall_thickness_m != null) document.getElementById("thick").value = r.wall_thickness_m;
+  if (r.deduction_m2 != null) document.getElementById("deduct").value = r.deduction_m2;
+
+  (r.outlines || []).forEach(function(o){
+    if (!o.geometry) return;
+    var layer = L.geoJSON({ type: "Feature", geometry: o.geometry },
+                          { renderer: shapeRenderer }).getLayers()[0];
+    drawn.addLayer(layer);
+    var s = { id: nextId, layer: layer, storeys: o.storeys || 1,
+              on: o.included !== false, label: o.label || ("Outline " + nextId) };
+    nextId++;
+    shapes.push(s);
+    bindLayer(s);
+  });
+  render();
+  if (fit && shapes.length) map.fitBounds(drawn.getBounds(), { padding: [40, 40] });
+}
+
+function save(){
+  try { localStorage.setItem(STORE, JSON.stringify(record())); }
+  catch(e){ document.getElementById("savenote").textContent =
+            "This browser will not keep your work. Save the record before you close the tab."; }
+}
+
+try {
+  var kept = localStorage.getItem(STORE);
+  if (kept){
+    var r = JSON.parse(kept);
+    if ((r.outlines || []).length){ restore(r, true); }
+  }
+} catch(e){ /* nothing kept */ }
+
+render();
+})();
+</script>
+</body>
+</html>
