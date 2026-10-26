@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="build-version" content="2026-09-03-09">
+<meta name="build-version" content="2026-10-26-01">
 <title>3D, 2D & Satellite Area Measure — CSR Sustain</title>
 
 <!-- MapLibre GL JS Engine -->
@@ -116,6 +116,12 @@
   }
   .tools button.action-btn.go{background:var(--hivis);color:#1A1200;border-color:var(--hivis);font-weight:600}
   .tools button.action-btn.go:hover{background:#FFD156}
+  .tools button.action-btn[aria-pressed="true"]{background:var(--draw);border-color:var(--draw);color:#fff;font-weight:600}
+  #sendbox{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+  .send-btn{width:100%;min-height:46px;border-radius:10px;border:0;background:#2BB673;color:#05210F;font:600 15px Barlow,system-ui,sans-serif;cursor:pointer}
+  .send-btn:disabled{opacity:.45;cursor:not-allowed}
+  .send-note{margin:8px 0 0;font-size:13px;color:var(--text-dim)}
+  .mapboxgl-canvas-container.picking, .maplibregl-canvas-container.picking{cursor:pointer}
   .tools button.action-btn:hover{border-color:var(--text-dim)}
 
   /* Map Layer List Box */
@@ -165,6 +171,7 @@
     <div id="map" tabindex="0"></div>
     <div class="tools">
       <button id="t-poly" class="action-btn go">Trace outline</button>
+      <button id="t-pick" class="action-btn" hidden aria-pressed="false">Select buildings</button>
       
       <!-- Map Layer Selector List -->
       <div class="layer-card">
@@ -210,6 +217,10 @@
         </div>
       </div>
       <div id="warnings"></div>
+      <div id="sendbox" hidden>
+        <button id="t-send" class="send-btn" disabled>Use this area in the quote</button>
+        <p class="send-note" id="send-note">Select or trace the building first.</p>
+      </div>
     </div>
 
     <div class="rail-body">
@@ -387,6 +398,9 @@ var shapeMeta = {};
 /* ------------------------------------------------------------- View Switcher */
 function setMapLayer(mode) {
   currentMode = mode;
+  // building selection only works on the flat 2D vector map
+  document.getElementById("t-pick").hidden = mode !== '2d';
+  if (mode !== '2d') setPick(false);
   
   // Highlight UI Selection
   document.querySelectorAll('.layer-opt').forEach(function(el){ el.classList.remove('active'); });
@@ -469,8 +483,120 @@ function internalArea(gj, t){
   } catch(e){ return null; }
 }
 
+/* ------------------------------------------------------------- Select buildings (2D vector map)
+   Click a building block to add its footprint as an outline; click it again to remove it.
+   Map tiles cut large buildings into pieces at tile edges, so pieces that meet along a tile edge are joined back up. */
+var picking = false, picked = {};   // picked: building key -> draw feature id
+
+function buildingLayers(){
+  var st = map.getStyle(); if (!st || !st.layers) return [];
+  return st.layers.filter(function(l){
+    return (l.type === 'fill' || l.type === 'fill-extrusion') && l.source && st.sources[l.source] && st.sources[l.source].type === 'vector' &&
+      /build/i.test((l['source-layer'] || '') + ' ' + l.id) && !(l.layout && l.layout.visibility === 'none');
+  });
+}
+function setPick(on){
+  picking = !!on;
+  var b = document.getElementById("t-pick");
+  b.setAttribute("aria-pressed", picking ? "true" : "false");
+  b.textContent = picking ? "Selecting buildings – click a block" : "Select buildings";
+  var c = map.getCanvasContainer(); if (c) c.classList.toggle("picking", picking);
+  if (picking){ draw.changeMode('simple_select'); note("Click a building to add it. Click it again to remove it. Zoom in if a block is hard to pick."); }
+  else note();
+}
+document.getElementById("t-pick").onclick = function(){
+  if (currentMode !== '2d') return;
+  if (!buildingLayers().length){ note("This map doesn't show building blocks here – zoom in, or trace the outline instead."); return; }
+  setPick(!picking);
+};
+
+/* tile edges at the zoom the building data comes from */
+function tileZoomFor(sourceId){
+  var src = map.getSource(sourceId), mz = (src && src.maxzoom) || 14;
+  return Math.min(Math.floor(map.getZoom()), mz);
+}
+function lon2x(lon, z){ return (lon + 180) / 360 * Math.pow(2, z); }
+function lat2y(lat, z){ var r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z); }
+/* the tile-edge lines (in tile units) that a ring has vertices sitting on */
+function tileEdgesOf(geom, z){
+  var edges = {}, rings = geom.type === 'Polygon' ? [geom.coordinates[0]] : geom.coordinates.map(function(p){ return p[0]; });
+  rings.forEach(function(ring){ ring.forEach(function(pt){
+    var x = lon2x(pt[0], z), y = lat2y(pt[1], z), tol = 2e-4;
+    if (Math.abs(x - Math.round(x)) < tol) edges['x' + Math.round(x)] = true;
+    if (Math.abs(y - Math.round(y)) < tol) edges['y' + Math.round(y)] = true;
+  }); });
+  return edges;
+}
+function shareEdge(a, b){ for (var k in a) if (b[k]) return true; return false; }
+function asPolygon(f){
+  var g = f.geometry;
+  if (g.type === 'Polygon') return {type:'Feature', properties:{}, geometry:{type:'Polygon', coordinates:[g.coordinates[0]]}};
+  if (g.type === 'MultiPolygon'){ // take the largest part
+    var best = null, ba = 0; g.coordinates.forEach(function(p){ var a = ringArea(p[0]); if (a > ba){ ba = a; best = p; } });
+    return best ? {type:'Feature', properties:{}, geometry:{type:'Polygon', coordinates:[best[0]]}} : null;
+  }
+  return null;
+}
+/* join the clicked piece with pieces cut off it at tile edges */
+function wholeBuilding(hit){
+  var z = tileZoomFor(hit.layer.source);
+  var base = asPolygon(hit); if (!base) return null;
+  var pieces = map.queryRenderedFeatures({layers:[hit.layer.id]})
+    .map(function(f){ return {f:asPolygon(f)}; }).filter(function(x){ return x.f; });
+  var shape = base, edges = tileEdgesOf(base.geometry, z), grew = true, guard = 0;
+  if (!Object.keys(edges).length) return shape;
+  while (grew && guard++ < 12){
+    grew = false;
+    for (var i = 0; i < pieces.length; i++){
+      var p = pieces[i]; if (p.used) continue;
+      var pe = tileEdgesOf(p.f.geometry, z);
+      if (!shareEdge(edges, pe)) continue;
+      try {
+        if (!turf.booleanIntersects(turf.buffer(p.f, 0.2, {units:'meters'}), shape)) continue;
+        if (turf.booleanEqual(p.f, shape)) { p.used = true; continue; }
+        var u = turf.union(turf.buffer(shape, 0.05, {units:'meters'}), turf.buffer(p.f, 0.05, {units:'meters'}));
+        if (u && u.geometry.type === 'Polygon'){
+          shape = turf.buffer(u, -0.05, {units:'meters'});
+          shape = asPolygon(shape) || shape;
+          for (var k in pe) edges[k] = true;
+          p.used = true; grew = true;
+        }
+      } catch(e){}
+    }
+  }
+  try { shape = turf.simplify(shape, {tolerance:0.0000015, highQuality:true}); } catch(e){}
+  return asPolygon(shape) || shape;
+}
+function keyOf(poly){ var c = turf.centroid(poly).geometry.coordinates; return c[0].toFixed(5) + ',' + c[1].toFixed(5); }
+map.on('click', function(e){
+  if (!picking) return;
+  var layers = buildingLayers().map(function(l){ return l.id; });
+  var hits = map.queryRenderedFeatures([[e.point.x - 2, e.point.y - 2], [e.point.x + 2, e.point.y + 2]], {layers:layers});
+  if (!hits.length){ note("No building there – click inside a building block, or zoom in."); return; }
+  // remove it if it's already selected
+  var pt = turf.point([e.lngLat.lng, e.lngLat.lat]);
+  for (var k in picked){
+    var df = draw.get(picked[k]);
+    if (df && turf.booleanPointInPolygon(pt, df)){ draw.delete(picked[k]); delete shapeMeta[picked[k]]; delete picked[k]; render(); note("Building removed. Click another block to add it."); return; }
+  }
+  var poly = wholeBuilding(hits[0]);
+  if (!poly){ note("That block couldn't be read – trace it instead."); return; }
+  var ids = draw.add({type:'Feature', properties:{picked:true}, geometry:poly.geometry});
+  var id = ids[0]; shapeMeta[id] = { storeys: 1, on: true }; picked[keyOf(poly)] = id;
+  render();
+  note("Added: " + fmt(areaOf(poly)) + " m² footprint. Set storeys in Outlines if it has more than one floor.");
+});
+map.on('mousemove', function(e){
+  if (!picking) return;
+  var layers = buildingLayers().map(function(l){ return l.id; });
+  var over = layers.length && map.queryRenderedFeatures(e.point, {layers:layers}).length;
+  map.getCanvas().style.cursor = over ? 'pointer' : 'crosshair';
+});
+map.on('styledata', function(){ if (picking && currentMode !== '2d') setPick(false); });
+
 /* ------------------------------------------------------------- Drawing Events */
 document.getElementById("t-poly").onclick = function(){
+  setPick(false);
   draw.changeMode('draw_polygon');
   note("Click corners to trace. Double-click or click initial point to finish.");
 };
@@ -545,7 +671,7 @@ function render(){
     var inputs = row.querySelectorAll("input,button");
     inputs[0].onchange = function(){ meta.storeys = Math.max(0.5, parseFloat(this.value) || 1); render(); };
     inputs[1].onclick = function(){ meta.on = !meta.on; render(); };
-    inputs[2].onclick = function(){ draw.delete(id); delete shapeMeta[id]; render(); };
+    inputs[2].onclick = function(){ draw.delete(id); delete shapeMeta[id]; for (var k in picked) if (picked[k] === id) delete picked[k]; render(); };
 
     list.appendChild(row);
   });
@@ -569,6 +695,38 @@ function render(){
   document.getElementById("warnings").innerHTML = warn.map(function(w){
     return '<div class="warnbox">' + w + "</div>";
   }).join("");
+
+  if (LINK.on){
+    var btn = document.getElementById("t-send");
+    btn.disabled = !(any && giaNet > 0);
+    btn.textContent = any && giaNet > 0 ? "Use " + fmt(giaNet) + " m² in the quote" : "Use this area in the quote";
+    document.getElementById("send-note").textContent = any && giaNet > 0 ? "Sends the internal floor area above to " + (LINK.site || "the building") + " on the quote." : "Select or trace the building first.";
+    LINK.result = { area: Math.round(giaNet), footprint: Math.round(foot), gea: Math.round(gea),
+      outlines: data.features.filter(function(f){ return shapeMeta[f.id] && shapeMeta[f.id].on; }).length, wall: t, deduct: deduct };
+  }
+}
+
+/* ------------------------------------------------------------- Link with the pricing form
+   Opened from a quote as ?link=1&ref=<building id>&q=<postcode>&site=<name>: the area goes back with one click. */
+var LINK = (function(){
+  var u = new URLSearchParams(location.search);
+  return { on: u.get('link') === '1', ref: u.get('ref') || '', q: u.get('q') || '', site: u.get('site') || '', result: null };
+})();
+function target(){ try { if (window.opener && !window.opener.closed) return window.opener; } catch(e){} return window.parent !== window ? window.parent : null; }
+if (LINK.on){
+  document.getElementById("sendbox").hidden = false;
+  document.getElementById("t-send").onclick = function(){
+    var t = target(); if (!t || !LINK.result) { alert("Couldn't reach the quote. Type the area in by hand."); return; }
+    t.postMessage({ type: 'csr-floor-area', ref: LINK.ref, result: LINK.result }, '*');
+    document.getElementById("send-note").textContent = "Sent to the quote.";
+    if (window.opener) setTimeout(function(){ window.close(); }, 400);
+  };
+  // start on the 2D map, ready to select, at the building's postcode
+  map.once('load', function(){
+    var r = document.querySelector('input[name="maplayer"][value="2d"]'); if (r){ r.checked = true; setMapLayer('2d'); }
+    map.once('idle', function(){ if (buildingLayers().length) setPick(true); });
+    if (LINK.q){ document.getElementById("q").value = LINK.q; document.getElementById("go").click(); }
+  });
 }
 
 document.getElementById("walls").onchange = function(){
@@ -604,7 +762,7 @@ document.getElementById("go").onclick = function(){
 /* Actions */
 document.getElementById("clear").onclick = function(){
   draw.deleteAll();
-  shapeMeta = {};
+  shapeMeta = {}; picked = {};
   render();
 };
 
