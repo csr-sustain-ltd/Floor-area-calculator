@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="build-version" content="2026-10-26-01">
+<meta name="build-version" content="2026-10-26-02">
 <title>3D, 2D & Satellite Area Measure — CSR Sustain</title>
 
 <!-- MapLibre GL JS Engine -->
@@ -172,6 +172,8 @@
     <div class="tools">
       <button id="t-poly" class="action-btn go">Trace outline</button>
       <button id="t-pick" class="action-btn" hidden aria-pressed="false">Select buildings</button>
+      <button id="t-cut" class="action-btn" hidden aria-pressed="false">Cut an outline</button>
+      <button id="t-keepall" class="action-btn" hidden>Keep all parts</button>
       
       <!-- Map Layer Selector List -->
       <div class="layer-card">
@@ -501,7 +503,7 @@ function setPick(on){
   b.setAttribute("aria-pressed", picking ? "true" : "false");
   b.textContent = picking ? "Selecting buildings – click a block" : "Select buildings";
   var c = map.getCanvasContainer(); if (c) c.classList.toggle("picking", picking);
-  if (picking){ draw.changeMode('simple_select'); note("Click a building to add it. Click it again to remove it. Zoom in if a block is hard to pick."); }
+  if (picking){ if (typeof cutting !== 'undefined' && cutting) setCut(false); draw.changeMode('simple_select'); note("Click a building to add it. Click it again to remove it. Zoom in if a block is hard to pick."); }
   else note();
 }
 document.getElementById("t-pick").onclick = function(){
@@ -569,7 +571,7 @@ function wholeBuilding(hit){
 }
 function keyOf(poly){ var c = turf.centroid(poly).geometry.coordinates; return c[0].toFixed(5) + ',' + c[1].toFixed(5); }
 map.on('click', function(e){
-  if (!picking) return;
+  if (!picking || choosing || cutting) return;
   var layers = buildingLayers().map(function(l){ return l.id; });
   var hits = map.queryRenderedFeatures([[e.point.x - 2, e.point.y - 2], [e.point.x + 2, e.point.y + 2]], {layers:layers});
   if (!hits.length){ note("No building there – click inside a building block, or zoom in."); return; }
@@ -596,7 +598,7 @@ map.on('styledata', function(){ if (picking && currentMode !== '2d') setPick(fal
 
 /* ------------------------------------------------------------- Drawing Events */
 document.getElementById("t-poly").onclick = function(){
-  setPick(false);
+  setPick(false); if (cutting) setCut(false); endChoosing(true);
   draw.changeMode('draw_polygon');
   note("Click corners to trace. Double-click or click initial point to finish.");
 };
@@ -609,10 +611,82 @@ function note(text){
 }
 
 map.on('draw.create', function(e){
-  var id = e.features[0].id;
+  var f = e.features[0], id = f.id;
+  if (f.geometry.type === 'LineString'){ draw.delete(id); if (cutting) doCut(f); return; }
   shapeMeta[id] = { storeys: 1, on: true };
   note();
   render();
+});
+
+/* ------------------------------------------------------------- Cut an outline
+   For blocks that join several buildings: draw a line across the outline where it should be split,
+   then click the part you are quoting for (or keep all parts as separate outlines). */
+var cutting = false, choosing = null;   // choosing: ids of the parts from the last cut
+function polygonsOnly(){ return draw.getAll().features.filter(function(f){ return f.geometry.type === 'Polygon'; }); }
+function setCut(on){
+  cutting = !!on;
+  var b = document.getElementById("t-cut");
+  b.setAttribute("aria-pressed", cutting ? "true" : "false");
+  b.textContent = cutting ? "Cutting – draw the line" : "Cut an outline";
+  if (cutting){
+    if (typeof setPick === 'function') setPick(false);
+    endChoosing();
+    draw.changeMode('draw_line_string');
+    note("Draw a line across the outline where you want to cut it: click to start, click again for each bend, double-click to finish. The line can start and end outside the building.");
+  } else if (!choosing){ note(); try{ draw.changeMode('simple_select'); }catch(e){} }
+}
+document.getElementById("t-cut").onclick = function(){ setCut(!cutting); };
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ if (cutting) setCut(false); if (choosing) endChoosing(true); } });
+
+/* make sure the line runs right through: stretch both ends outwards by 200 m */
+function extendLine(coords){
+  var c = coords.slice(), n = c.length;
+  function push(a, b){ var d = turf.distance(turf.point(b), turf.point(a), {units:'meters'}); if (!d) return a;
+    var brg = turf.bearing(turf.point(b), turf.point(a)); return turf.destination(turf.point(a), 200, brg, {units:'meters'}).geometry.coordinates; }
+  if (n >= 2){ c[0] = push(c[0], c[1]); c[n - 1] = push(c[n - 1], c[n - 2]); }
+  return c;
+}
+function doCut(lineFeature){
+  setCut(false);
+  var line = turf.lineString(extendLine(lineFeature.geometry.coordinates));
+  var blade = turf.buffer(line, 0.01, {units:'meters'});   // a 2 cm wide cut
+  var made = [], cutAny = false;
+  polygonsOnly().forEach(function(poly){
+    if (!turf.booleanIntersects(line, poly)) return;
+    var res = null; try { res = turf.difference(poly, blade); } catch(e){ res = null; }
+    if (!res || res.geometry.type !== 'MultiPolygon') return;
+    var parts = res.geometry.coordinates.map(function(c){ return {type:'Feature', properties:{}, geometry:{type:'Polygon', coordinates:[c[0]]}}; })
+      .filter(function(f){ return areaOf(f) > 0.5; });
+    if (parts.length < 2) return;
+    var meta = shapeMeta[poly.id] || { storeys: 1, on: true };
+    draw.delete(poly.id); delete shapeMeta[poly.id];
+    if (typeof picked === 'object') for (var k in picked) if (picked[k] === poly.id) delete picked[k];
+    parts.forEach(function(f){ var nid = draw.add(f)[0]; shapeMeta[nid] = { storeys: meta.storeys, on: true }; made.push(nid); });
+    cutAny = true;
+  });
+  render();
+  if (!cutAny){ note("The line didn't cross an outline from side to side – try again, drawing right across it."); return; }
+  choosing = made;
+  document.getElementById("t-keepall").hidden = false;
+  note("Cut into " + made.length + " parts. Click the part you're quoting for to keep it, or press Keep all parts.");
+}
+function endChoosing(keepAll){
+  if (!choosing) return;
+  choosing = null;
+  document.getElementById("t-keepall").hidden = true;
+  if (keepAll) note("All parts kept – each is its own outline. Exclude or remove any you don't need under Outlines.");
+}
+document.getElementById("t-keepall").onclick = function(){ endChoosing(true); };
+map.on('click', function(e){
+  if (!choosing || cutting) return;
+  var pt = turf.point([e.lngLat.lng, e.lngLat.lat]), keep = null;
+  choosing.forEach(function(id){ var f = draw.get(id); if (f && turf.booleanPointInPolygon(pt, f)) keep = id; });
+  if (!keep){ note("Click inside one of the parts you've just cut, or press Keep all parts."); return; }
+  var removed = 0;
+  choosing.forEach(function(id){ if (id !== keep){ draw.delete(id); delete shapeMeta[id]; removed++; } });
+  choosing = null; document.getElementById("t-keepall").hidden = true;
+  render();
+  note("Kept that part (" + fmt(areaOf(draw.get(keep))) + " m² footprint). You can cut it again if needed.");
 });
 map.on('draw.update', render);
 map.on('draw.delete', render);
@@ -677,6 +751,7 @@ function render(){
   });
 
   var giaNet = Math.max(0, gia - deduct);
+  document.getElementById("t-cut").hidden = !data.features.some(function(f){ return f.geometry.type === 'Polygon'; });
   var any = data.features.some(function(f){ return shapeMeta[f.id] && shapeMeta[f.id].on; });
 
   document.getElementById("empty").hidden = any;
